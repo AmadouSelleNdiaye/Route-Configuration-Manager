@@ -1,0 +1,134 @@
+{
+    "id": "2788",
+    "name": "TEST-AB-EDMO-STD-DOWNTOWN-CASCADE-20240115-PROD",
+    "region": "INTLCM-EDMO-DOWNTOWN",
+    "regionDescription": "AB-EDMO-STD-DOWNTOWN",
+    "depotLocation": {
+        "lat": 53.478433,
+        "lng": -113.475335
+    },
+    "isDefault": false,
+    "isValidGraph": false,
+    "admissibleRoutePatterns": "EDMO|1500|1799",
+    "postalCodePrefixes": "",
+    "active": 1,
+    "routingParameterUiVehicleDTOs": [
+        {
+            "id": "108569",
+            "routingParameterId": "2788",
+            "name": "EDMO1500",
+            "precedence": null,
+            "softPrecedence": null,
+            "sourceLat": null,
+            "sourceLng": null,
+            "sinkLat": null,
+            "sinkLng": null,
+            "adjacentRoutes": "EDMO1500",
+            "representative": "EDMO1500",
+            "excludedRoutes": "",
+            "routingParameterUiVehiclePreferenceDTOs": [
+                {
+                    "id": "191243",
+                    "routingParameterVehicleId": "108569",
+                    "zip": "T6N",
+                    "tag": "",
+                    "inPolygon": null,
+                    "routingParameterUiPolygonDTO": null,
+                    "value": 1.0,
+                    "orderRank": 1
+                },
+                {
+                    "id": "191244",
+                    "routingParameterVehicleId": "108569",
+                    "zip": " T5H",
+                    "tag": "",
+                    "inPolygon": null,
+                    "routingParameterUiPolygonDTO": null,
+                    "value": 1.0,
+                    "orderRank": 2
+                },
+                {
+                    "id": "191245",
+                    "routingParameterVehicleId": "108569",
+                    "zip": " T5J",
+                    "tag": "",
+                    "inPolygon": null,
+                    "routingParameterUiPolygonDTO": null,
+                    "value": 1.0,
+                    "orderRank": 3
+                },
+                {
+                    "id": "191246",
+                    "routingParameterVehicleId": "108569",
+                    "zip": " T5K",
+                    "tag": "",
+                    "inPolygon": null,
+                    "routingParameterUiPolygonDTO": null,
+                    "value": 1.0,
+                    "orderRank": 4
+                }
+            ],
+            "hardTarget": false,
+            "electric": false
+        },
+        {
+            "id": "108570",
+            "routingParameterId": "2788",
+            "name": "ZZ_RESIDUALS",
+            "precedence": null,
+            "softPrecedence": null,
+            "sourceLat": null,
+            "sourceLng": null,
+            "sinkLat": null,
+            "sinkLng": null,
+            "adjacentRoutes": "ZZ_RESIDUALS",
+            "representative": "EDMO1500",
+            "excludedRoutes": "",
+            "routingParameterUiVehiclePreferenceDTOs": [
+                {
+                    "id": "191247",
+                    "routingParameterVehicleId": "108570",
+                    "zip": "*",
+                    "tag": "",
+                    "inPolygon": null,
+                    "routingParameterUiPolygonDTO": null,
+                    "value": 1.0,
+                    "orderRank": 1
+                }
+            ],
+            "hardTarget": true,
+            "electric": false
+        }
+    ],
+    "routingParameterUiPolygonDTOs": [],
+    "routingParameterNodeDTOs": [
+        {
+            "id": 108569,
+            "label": "EDMO1500",
+            "color": "#ff0000",
+            "value": 1
+        },
+        {
+            "id": 108570,
+            "label": "ZZ_RESIDUALS",
+            "color": "#325ca8",
+            "value": 1
+        }
+    ],
+    "routingParameterEdgeDTOs": [],
+    "isCascade": 1,
+    "routeNumberGap": 5,
+    "canEditCascade": null,
+    "routingParameterUiAuditStatusDTO": {
+        "routingParameterId": "2788",
+        "auditCreatedUserInfo": {
+            "userName": "rlaporte@intelcomexpress.com",
+            "timestamp": 1705088377000
+        },
+        "auditLastUpdateUserInfo": {
+            "userName": "rlaporte@intelcomexpress.com",
+            "timestamp": 1705343963000
+        }
+    },
+    "nbVehicle": 2
+}
