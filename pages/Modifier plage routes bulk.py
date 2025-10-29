@@ -82,7 +82,7 @@ if st.button("💾 Appliquer les changements"):
 
     # Étape 2 — Calcul correspondance old_name → new_name avec gap constant
     name_mapping = {}
-    current_num = new_min
+    current_num = new_min+200
 
     for route in data.get("routingParameterUiVehicleDTOs", []):
         old_name = route.get("name", "")
