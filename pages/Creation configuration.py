@@ -1,183 +1,308 @@
 import streamlit as st
 import geopandas as gpd
-import folium
-from streamlit_folium import st_folium
-import json
-from shapely.geometry import MultiPolygon, Polygon
-from pathlib import Path
-import hashlib
-import io
-import uuid
-import re
+from shapely.geometry import Point, Polygon, MultiPolygon
+from shapely.ops import unary_union
+import json, datetime, random, os
 
-st.set_page_config(page_title="Création manuelle de configuration", layout="wide")
-st.title("🆕 Création manuelle — Ajout de routes avec validations et dépôt fixe")
+# =========================================================
+# CONFIGURATION
+# =========================================================
+st.set_page_config(page_title="Créateur JSON Routage Intelcom", layout="wide")
+st.title("🚚 Générateur complet de structure JSON de routage Intelcom")
 
-# --- Charger le shapefile ---
-shapefile_path = Path("data/lfsa000b21a_e.shp")
+# --- Path shapefile automatique ---
+SHAPEFILE_PATH = "data/lfsa000b21a_e.shp"
 
-try:
-    gdf = gpd.read_file(shapefile_path)[["CFSAUID", "geometry"]]
-    gdf["CFSAUID"] = gdf["CFSAUID"].astype(str).str.upper().str.strip()
-    if gdf.crs and gdf.crs.to_string().lower() != "epsg:4326":
+# --- Position du dépôt par défaut ---
+DEPOT_LAT, DEPOT_LNG = 45.50270149065861, -73.72035650279874
+
+# =========================================================
+# OUTILS
+# =========================================================
+def ensure_wgs84(gdf):
+    if gdf.crs is None:
+        gdf.set_crs(epsg=4326, inplace=True)
+    elif gdf.crs.to_epsg() != 4326:
         gdf = gdf.to_crs(epsg=4326)
-    st.success("✅ Shapefile chargé et reprojeté en EPSG:4326.")
-except Exception as e:
-    st.error(f"❌ Erreur de chargement du shapefile : {e}")
+    return gdf
+
+def find_fsa_column(df):
+    for c in df.columns:
+        if c.upper() in ["CFSAUID", "FSA", "ZIP"]:
+            return c
+    for c in df.columns:
+        if df[c].dtype == object and df[c].astype(str).str.match(r"^[A-Z]\d[A-Z]").any():
+            return c
+    raise ValueError("Aucune colonne FSA trouvée dans le shapefile.")
+
+def union_to_polygon(geom):
+    if isinstance(geom, MultiPolygon):
+        return max(list(geom.geoms), key=lambda g: g.area)
+    return geom
+
+# --- 🔧 FORMATAGE EXACT DES COORDONNÉES SELON LE FICHIER DE RÉFÉRENCE ---
+def _format_coord(value: float) -> str:
+    s = f"{value:.15f}".rstrip("0").rstrip(".")
+    return "0" if s in ("", "-0") else s
+
+
+def polygon_to_str(geom: Polygon):
+    coords = list(geom.exterior.coords)
+    return "".join([f"{_format_coord(x)},{_format_coord(y)},0\r\n" for x, y in coords])
+
+def distance_to_depot(geom, depot_point):
+    try:
+        return geom.centroid.distance(depot_point)
+    except:
+        return float("inf")
+
+
+MAX_POLYGON_CHARS = 6000
+SIMPLIFY_TOLERANCES = [0, 0.0003, 0.0008, 0.0015, 0.003, 0.006, 0.01]
+
+
+def simplify_polygon_to_limit(geom, max_chars=MAX_POLYGON_CHARS):
+    base = union_to_polygon(geom)
+    best_geom = base
+    best_str = polygon_to_str(base)
+
+    if len(best_str) <= max_chars:
+        return best_geom, best_str
+
+    for tol in SIMPLIFY_TOLERANCES[1:]:
+        candidate = base.simplify(tol, preserve_topology=True)
+        if candidate.is_empty:
+            continue
+        if not isinstance(candidate, (Polygon, MultiPolygon)):
+            continue
+        candidate = union_to_polygon(candidate)
+        candidate_str = polygon_to_str(candidate)
+        best_geom, best_str = candidate, candidate_str
+        if len(candidate_str) <= max_chars:
+            break
+
+    return best_geom, best_str
+
+# =========================================================
+# CHARGEMENT DU SHAPEFILE
+# =========================================================
+st.header("1️⃣ Chargement automatique du shapefile")
+
+if not os.path.exists(SHAPEFILE_PATH):
+    st.error(f"❌ Le fichier shapefile n'existe pas à {SHAPEFILE_PATH}")
     st.stop()
 
-# --- Fonctions utilitaires ---
-def color_from_name(name: str) -> str:
-    h = hashlib.sha1(name.encode()).hexdigest()[:6]
-    return f"#{h}"
+gdf = gpd.read_file(SHAPEFILE_PATH)
+gdf = ensure_wgs84(gdf)
+fsa_col = find_fsa_column(gdf)
+all_fsas = sorted(gdf[fsa_col].astype(str).unique().tolist())
+st.success(f"✅ Shapefile chargé ({len(all_fsas)} FSAs détectés via {fsa_col})")
 
-def polygon_to_text(geom) -> str:
-    """Convertit une géométrie en texte lon,lat,0"""
-    parts = []
-    if isinstance(geom, Polygon):
-        coords = list(geom.exterior.coords)
-        parts.append("\r\n".join([f"{x:.8f},{y:.8f},0" for x, y in coords]))
-    elif isinstance(geom, MultiPolygon):
-        for p in geom.geoms:
-            coords = list(p.exterior.coords)
-            parts.append("\r\n".join([f"{x:.8f},{y:.8f},0" for x, y in coords]))
-    return "\r\n\r\n".join(parts)
+# =========================================================
+# PARAMÈTRES DU RÉSEAU (tous les éléments)
+# =========================================================
+st.header("2️⃣ Paramètres généraux du réseau")
 
-# --- Paramètres généraux ---
-st.subheader("⚙️ Paramètres généraux")
+col1, col2 = st.columns(2)
+with col1:
+    network_id = st.text_input("Identifiant du réseau (id)", "4485")
+    network_name = st.text_input("Nom du réseau", "QC-MONT-STD-SORT1-CASCADE-TSL")
+    region = st.text_input("Région (region)", "INTLCM-MONT")
+    region_description = st.text_input("Description de la région", "QC-MONT-STD")
+    admissible_patterns = st.text_input("Admissible Route Patterns", "MONT|1000|1499")
+with col2:
+    depot_lat = st.number_input("Latitude du dépôt", value=DEPOT_LAT, format="%.12f")
+    depot_lng = st.number_input("Longitude du dépôt", value=DEPOT_LNG, format="%.12f")
+    route_number_gap = st.number_input("Écart entre numéros de route", min_value=1, value=5)
+    is_default = st.checkbox("isDefault", value=False)
+    is_cascade = st.checkbox("isCascade", value=True)
+    is_valid_graph = st.checkbox("isValidGraph", value=True)
+    active = st.checkbox("active", value=True)
 
-prefix = st.text_input("Préfixe des routes (ex: MONT)", "MONT").strip().upper()
-min_route = st.number_input("Numéro minimum de route", value=1500, min_value=1)
-max_route = st.number_input("Numéro maximum de route", value=1520, min_value=min_route)
-depot_lat = st.number_input("Latitude du dépôt", value=45.5017, format="%.6f")
-depot_lon = st.number_input("Longitude du dépôt", value=-73.5673, format="%.6f")
+depot_point = Point(depot_lng, depot_lat)
 
-st.markdown("---")
-st.subheader("🚗 Ajouter des routes manuellement")
+# --- 🧩 Extraction dynamique du préfixe et bornes à partir d'admissibleRoutePatterns ---
+try:
+    parts = admissible_patterns.split("|")
+    prefix, start_num, end_num = parts[0], int(parts[1]), int(parts[2])
+except Exception:
+    prefix, start_num, end_num = "ROUTE", 1000, 1999
 
-# Stocker les routes
+# =========================================================
+# CRÉATION DES ROUTES
+# =========================================================
+st.header("3️⃣ Création des routes à partir des FSAs")
+
 if "routes" not in st.session_state:
     st.session_state.routes = []
+if "used_nums" not in st.session_state:
+    st.session_state.used_nums = []
 
-# Formulaire d’ajout
-with st.form("add_route_form"):
-    new_route_name = st.text_input("Nom de la route (ex: MONT1500)").strip().upper()
-    available_fsas = sorted(gdf["CFSAUID"].unique())
-    selected_fsas = st.multiselect("FSA associés :", available_fsas, key="fsas_new")
-    add_button = st.form_submit_button("➕ Ajouter la route")
+selected_fsas = st.multiselect("Sélectionner les FSAs à inclure dans la nouvelle route :", all_fsas)
+zone_name = st.text_input("Nom de la zone (nom du polygone associé)")  # 🆕 Ajout du nom de la zone
+hard_target = st.checkbox("hardTarget", value=True)
+electric = st.checkbox("electric (véhicule électrique)", value=False)
 
-# --- Validation du nom ---
-if add_button:
-    if not new_route_name:
-        st.error("🚫 Le nom de la route est obligatoire.")
-    elif not re.match(rf"^{prefix}(\d+)$", new_route_name):
-        st.error(f"🚫 Le nom doit commencer par '{prefix}' suivi d’un nombre (ex: {prefix}1500).")
+add_route = st.button("➕ Ajouter la route à partir des FSAs sélectionnées")
+
+if add_route:
+    if not selected_fsas:
+        st.warning("Veuillez choisir au moins une FSA.")
     else:
-        route_num = int(re.findall(r"\d+", new_route_name)[0])
-        if not (min_route <= route_num <= max_route):
-            st.error(f"🚫 Le numéro {route_num} est hors de la plage {min_route}-{max_route}.")
-        elif any(r["name"] == new_route_name for r in st.session_state.routes):
-            st.error(f"🚫 La route '{new_route_name}' existe déjà.")
-        elif not selected_fsas:
-            st.error("🚫 Tu dois sélectionner au moins un FSA.")
+        sub = gdf[gdf[fsa_col].astype(str).isin(selected_fsas)]
+        geom_union = unary_union(sub.geometry)
+        geom_union = union_to_polygon(geom_union)
+        _, polygon_coords = simplify_polygon_to_limit(geom_union)
+
+        num = start_num
+        while num in st.session_state.used_nums:
+            num += route_number_gap
+        st.session_state.used_nums.append(num)
+        route_name = f"{prefix}{num}"
+
+        uid = random.randint(152400, 152999)
+        poly_id = random.randint(88360, 88400)
+        pref_id = random.randint(238760, 238999)
+
+        route = {
+            "id": str(uid),
+            "routingParameterId": network_id,
+            "name": route_name,
+            "precedence": None,
+            "softPrecedence": None,
+            "sourceLat": None,
+            "sourceLng": None,
+            "sinkLat": None,
+            "sinkLng": None,
+            "adjacentRoutes": "",
+            "representative": "",
+            "excludedRoutes": "",
+            "routingParameterUiVehiclePreferenceDTOs": [
+                {
+                    "id": str(pref_id),
+                    "routingParameterVehicleId": str(uid),
+                    "zip": ",".join(selected_fsas),
+                    "tag": "",
+                    "inPolygon": True,
+                    "routingParameterUiPolygonDTO": {
+                        "id": str(poly_id),
+                        "name": zone_name or route_name,  # 🆕 Nom de la zone ajouté
+                        "polygonCoordinates": polygon_coords,
+                        "routingParameterId": network_id
+                    },
+                    "value": 1.0,
+                    "orderRank": 1
+                }
+            ],
+            "hardTarget": hard_target,
+            "electric": electric,
+            "_geom": geom_union
+        }
+        st.session_state.routes.append(route)
+        st.success(f"✅ Route {route_name} créée ({len(selected_fsas)} FSAs).")
+
+# =========================================================
+# RELATIONS AUTOMATIQUES : ADJACENTE + REPRÉSENTATIVE
+# =========================================================
+def compute_relations(routes, depot_point):
+    if not routes:
+        return
+    containing = [r for r in routes if r["_geom"].contains(depot_point)]
+    rep_name = containing[0]["name"] if containing else min(
+        routes, key=lambda r: distance_to_depot(r["_geom"], depot_point)
+    )["name"]
+
+    ordered = sorted(routes, key=lambda r: distance_to_depot(r["_geom"], depot_point))
+    rep_route = None
+    for i, r in enumerate(ordered):
+        r["representative"] = rep_name
+        if i == 0:
+            r["adjacentRoutes"] = ""
         else:
-            st.session_state.routes.append({
-                "name": new_route_name,
-                "fsas": selected_fsas
-            })
-            st.success(f"✅ Route {new_route_name} ajoutée avec {len(selected_fsas)} FSA.")
+            r["adjacentRoutes"] = ordered[i - 1]["name"]
+        if r["name"] == rep_name:
+            rep_route = r
+        r.pop("_geom", None)
+    if rep_route:
+        rep_route["adjacentRoutes"] = rep_route["name"]
 
-# --- Liste des routes ajoutées ---
-if st.session_state.routes:
-    st.markdown("### 🧩 Routes actuellement configurées")
-    for route in st.session_state.routes:
-        st.markdown(f"**{route['name']}** → {len(route['fsas'])} FSA : {', '.join(route['fsas'])}")
+# =========================================================
+# GÉNÉRATION ET TÉLÉCHARGEMENT DU JSON COMPLET
+# =========================================================
+st.header("4️⃣ Génération du JSON final complet")
 
-    if st.button("🚀 Générer la configuration finale"):
-        # Construire la configuration principale
-        config = {
-            "id": str(uuid.uuid4())[:12],
-            "admissibleRoutePatterns": f"{prefix}|{min_route}|{max_route}",
-            "depotLocation": {"latitude": depot_lat, "longitude": depot_lon},
-            "routingParameterUiVehicleDTOs": []
+if st.button("🧱 Générer la structure JSON complète"):
+    if not st.session_state.routes:
+        st.warning("Aucune route n’a été ajoutée.")
+    else:
+        compute_relations(st.session_state.routes, depot_point)
+
+        polygons = [
+            r["routingParameterUiVehiclePreferenceDTOs"][0]["routingParameterUiPolygonDTO"]
+            for r in st.session_state.routes
+        ]
+        nodes = [
+            {"id": int(r["id"]), "label": r["name"], "color": "#33cccc", "value": 1}
+            for r in st.session_state.routes
+        ]
+        edges = []
+        name_to_id = {r["name"]: int(r["id"]) for r in st.session_state.routes}
+        for r in st.session_state.routes:
+            if r["adjacentRoutes"] and r["adjacentRoutes"] in name_to_id:
+                edges.append({"from": int(r["id"]), "to": name_to_id[r["adjacentRoutes"]]})
+
+        json_data = {
+            "id": network_id,
+            "name": network_name,
+            "region": region,
+            "regionDescription": region_description,
+            "depotLocation": {"lat": depot_lat, "lng": depot_lng},
+            "isDefault": is_default,
+            "isValidGraph": is_valid_graph,
+            "admissibleRoutePatterns": admissible_patterns,
+            "postalCodePrefixes": "",
+            "active": int(active),
+            "routingParameterUiVehicleDTOs": st.session_state.routes,
+            "routingParameterUiPolygonDTOs": polygons,
+            "routingParameterNodeDTOs": nodes,
+            "routingParameterEdgeDTOs": edges,
+            "isCascade": int(is_cascade),
+            "routeNumberGap": route_number_gap,
+            "canEditCascade": None,
+            "routingParameterUiAuditStatusDTO": {
+                "routingParameterId": network_id,
+                "auditCreatedUserInfo": {
+                    "userName": "admin@intelcomexpress.com",
+                    "timestamp": int(datetime.datetime.now().timestamp() * 1000)
+                },
+                "auditLastUpdateUserInfo": {
+                    "userName": "admin@intelcomexpress.com",
+                    "timestamp": int(datetime.datetime.now().timestamp() * 1000)
+                }
+            },
+            "nbVehicle": len(st.session_state.routes)
         }
 
-        # Carte principale
-        m = folium.Map(location=[depot_lat, depot_lon], zoom_start=10)
+        st.subheader("🧾 Structure JSON complète")
+        st.json(json_data)
 
-        for i, route in enumerate(st.session_state.routes, start=1):
-            route_name = route["name"]
-            fsas = route["fsas"]
-
-            gdf_selected = gdf[gdf["CFSAUID"].isin(fsas)]
-            if gdf_selected.empty:
-                st.warning(f"⚠️ Aucun FSA trouvé pour {route_name}.")
-                continue
-
-            merged_geom = gdf_selected.unary_union
-            poly_text = polygon_to_text(merged_geom)
-            color = color_from_name(route_name)
-
-            # Affichage sur la carte
-            folium.GeoJson(
-                merged_geom,
-                name=route_name,
-                tooltip=f"{route_name} — {len(fsas)} FSA",
-                style_function=lambda x, c=color: {"fillColor": c, "color": c, "weight": 2, "fillOpacity": 0.45}
-            ).add_to(m)
-
-            # Objet JSON
-            route_obj = {
-                "id": str(uuid.uuid4())[:12],
-                "name": route_name,
-                "adjacentRoutes": "",
-                "representative": i == 1,
-                "routingParameterUiVehiclePreferenceDTOs": [
-                    {
-                        "id": str(uuid.uuid4())[:12],
-                        "zip": ",".join(fsas),
-                        "routingParameterUiPolygonDTO": {
-                            "id": str(uuid.uuid4())[:12],
-                            "name": f"{route_name}_ZONE",
-                            "polygonCoordinates": poly_text
-                        },
-                        "value": 1.0,
-                        "orderRank": 1
-                    }
-                ]
-            }
-            config["routingParameterUiVehicleDTOs"].append(route_obj)
-
-        # Ajout du dépôt sur la carte
-        folium.Marker(
-            [depot_lat, depot_lon],
-            popup="📦 Dépôt principal",
-            tooltip="Dépôt d'origine",
-            icon=folium.Icon(color="red", icon="home", prefix="fa")
-        ).add_to(m)
-
-        # Résumé carte + JSON
-        st.subheader("🗺️ Carte générée")
-        st_folium(m, width=950, height=600)
-
-        st.subheader("🧾 JSON généré")
-        st.json(config)
-
-        # Téléchargement
-        buffer = io.BytesIO()
-        json_bytes = json.dumps(config, indent=4, ensure_ascii=False).encode("utf-8")
-        buffer.write(json_bytes)
-        buffer.seek(0)
         st.download_button(
-            label="📥 Télécharger la configuration complète",
-            data=buffer,
-            file_name=f"{prefix}_CONFIG_MANUEL.json",
+            label="📥 Télécharger le JSON complet",
+            data=json.dumps(json_data, indent=4),
+            file_name=f"{network_name}.json",
             mime="application/json"
         )
 
-    # Réinitialisation
-    if st.button("🗑️ Réinitialiser toutes les routes"):
-        st.session_state.routes = []
-        st.experimental_rerun()
-else:
-    st.info("🧭 Aucune route ajoutée. Utilise le formulaire ci-dessus pour commencer.")
+# =========================================================
+# APERÇU DES ROUTES
+# =========================================================
+if st.session_state.routes:
+    st.header("5️⃣ Routes enregistrées")
+    for r in st.session_state.routes:
+        pref = r["routingParameterUiVehiclePreferenceDTOs"][0]
+        st.markdown(
+            f"- **{r['name']}** | Zone: `{pref['routingParameterUiPolygonDTO']['name']}` | "
+            f"Adjacent: `{r['adjacentRoutes'] or '—'}` | "
+            f"Représentative: `{r['representative'] or '—'}` | "
+            f"Zips: `{pref['zip']}` | Electric: `{r['electric']}` | HardTarget: `{r['hardTarget']}`"
+        )

@@ -143,23 +143,44 @@ def build_polygons_from_data(data):
 
 polygons = build_polygons_from_data(data)
 
+# --- Coordonnées du dépôt ---
+def get_depot_coordinates(data):
+    depot = data.get("depotLocation")
+    if not isinstance(depot, dict):
+        return None
+    lat = depot.get("latitude")
+    if lat is None:
+        lat = depot.get("lat")
+    lon = depot.get("longitude")
+    if lon is None:
+        lon = depot.get("lng")
+    if lon is None:
+        lon = depot.get("long")
+    if lat is None or lon is None:
+        return None
+    try:
+        return float(lat), float(lon)
+    except (TypeError, ValueError):
+        return None
+
 # --- Affichage de la carte ---
 def show_map(polygons, highlight=None):
-    m = folium.Map(location=[45.5017, -73.5673], zoom_start=10)
+    depot_coords = get_depot_coordinates(data)
+    if depot_coords:
+        depot_lat, depot_lon = depot_coords
+        map_location = [depot_lat, depot_lon]
+    else:
+        map_location = [45.5017, -73.5673]
+    m = folium.Map(location=map_location, zoom_start=10)
+
     # --- Ajouter le dépôt sur la carte ---
-    if "depotLocation" in data:
-        depot = data["depotLocation"]
-        lat_key = "latitude" if "latitude" in depot else "lat"
-        lon_key = "longitude" if "longitude" in depot else "lng"
-        depot_lat = depot.get(lat_key)
-        depot_lon = depot.get(lon_key)
-        if depot_lat and depot_lon:
-            folium.Marker(
-                [float(depot_lat), float(depot_lon)],
-                popup="📦 Dépôt principal",
-                tooltip="Dépôt",
-                icon=folium.Icon(color="red", icon="home", prefix="fa")
-            ).add_to(m)
+    if depot_coords:
+        folium.Marker(
+            [depot_coords[0], depot_coords[1]],
+            popup="📦 Dépôt principal",
+            tooltip="Dépôt",
+            icon=folium.Icon(color="red", icon="home", prefix="fa")
+        ).add_to(m)
 
     for poly in polygons:
         color = color_from_name(poly["route_name"])
