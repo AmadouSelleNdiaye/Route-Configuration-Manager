@@ -2,6 +2,8 @@ import streamlit as st
 from streamlit_folium import st_folium
 import folium
 import json
+import gzip
+import pickle
 from shapely.geometry import Point, Polygon, MultiPolygon
 from shapely.ops import unary_union
 import geopandas as gpd
@@ -16,6 +18,9 @@ st.title("🗺️ Carte interactive — Édition dynamique des zones par codes p
 
 # --- Chemins des fichiers ---
 shapefile_path = Path("data/lfsa000b21a_e.shp")
+FSA_CACHE_DIR = Path("data/.cache")
+FSA_CACHE_PATH = FSA_CACHE_DIR / "fsa_geom_cache.pkl.gz"
+FSA_CACHE_VERSION = 1
 
 # --- Uploader pour le JSON ---
 uploaded_json = st.file_uploader("📂 Charger le fichier JSON de configuration", type=["json"])
@@ -96,19 +101,87 @@ def normalize_geom(geom):
         return polys[0]
     return MultiPolygon(polys)
 
-@st.cache_data(show_spinner=False)
-def load_shapefile_data(path: str):
+def _compute_file_signature(path: Path) -> str:
+    stats = path.stat()
+    return f"{path.name}:{stats.st_size}:{stats.st_mtime_ns}"
+
+
+def _load_cached_fsa_geoms(expected_signature: str, version: int):
+    if not FSA_CACHE_PATH.exists():
+        return None
+    try:
+        with gzip.open(FSA_CACHE_PATH, "rb") as fh:
+            payload = pickle.load(fh)
+    except Exception:
+        return None
+    if payload.get("version") != version:
+        return None
+    if payload.get("signature") != expected_signature:
+        return None
+    return payload.get("data")
+
+
+def _write_cached_fsa_geoms(signature: str, version: int, fsa_geom_map):
+    try:
+        FSA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with gzip.open(FSA_CACHE_PATH, "wb") as fh:
+            pickle.dump(
+                {
+                    "version": version,
+                    "signature": signature,
+                    "data": fsa_geom_map,
+                },
+                fh,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+    except Exception as exc:
+        st.warning(f"⚠️ Impossible de persister le cache FSA : {exc}")
+
+
+@st.cache_resource(show_spinner=False)
+def load_fsa_geom_map(path: str, signature: str, cache_version: int):
+    cached = _load_cached_fsa_geoms(signature, cache_version)
+    if cached is not None:
+        return cached, True
+
     gdf_local = gpd.read_file(path)[["CFSAUID", "geometry"]]
     gdf_local["CFSAUID"] = gdf_local["CFSAUID"].astype(str).str.upper().str.strip()
     if gdf_local.crs and gdf_local.crs.to_string().lower() != "epsg:4326":
         gdf_local = gdf_local.to_crs(epsg=4326)
+
     fsa_geoms = {}
     for fsa, sub in gdf_local.groupby("CFSAUID"):
         merged = sub.geometry.unary_union
         merged_norm = normalize_geom(merged)
         if merged_norm:
             fsa_geoms[fsa] = merged_norm
-    return gdf_local, fsa_geoms
+
+    _write_cached_fsa_geoms(signature, cache_version, fsa_geoms)
+    return fsa_geoms, False
+
+
+def ensure_fsa_geom_map():
+    if "home_fsa_geom_map" in st.session_state:
+        return st.session_state["home_fsa_geom_map"]
+
+    if not shapefile_path.exists():
+        st.error(f"❌ Shapefile introuvable : {shapefile_path}")
+        st.stop()
+
+    signature = _compute_file_signature(shapefile_path)
+    try:
+        with st.spinner("Chargement des géométries FSA (peut prendre quelques minutes la première fois)..."):
+            fsa_geom_map, from_cache = load_fsa_geom_map(
+                str(shapefile_path), signature, FSA_CACHE_VERSION
+            )
+    except Exception as exc:
+        st.error(f"❌ Erreur de chargement des géométries FSA : {exc}")
+        st.stop()
+
+    st.session_state["home_fsa_geom_map"] = fsa_geom_map
+    source_label = "cache local" if from_cache else "shapefile (cache mis à jour)"
+    st.info(f"📁 Référentiel FSA chargé depuis le {source_label}.")
+    return fsa_geom_map
 
 def merge_fsas_to_geom(fsas, fsa_geom_map):
     geoms = [fsa_geom_map.get(f.upper().strip()) for f in fsas if f and f.upper().strip() in fsa_geom_map]
@@ -189,14 +262,6 @@ def get_polygons_cache():
         cached_polygons = build_polygons_from_data(data)
         st.session_state["home_polygons_cache"] = cached_polygons
     return cached_polygons
-
-# --- Charger le shapefile ---
-try:
-    _, fsa_geom_map = load_shapefile_data(str(shapefile_path))
-    st.success("✅ Shapefile chargé et reprojeté en EPSG:4326.")
-except Exception as e:
-    st.error(f"❌ Erreur de chargement du shapefile : {e}")
-    st.stop()
 
 polygons = get_polygons_cache()
 map_container = st.container()
@@ -305,12 +370,22 @@ if st_data and st_data.get("last_clicked"):
             sorted(curr_pref_zips),
             key=f"remove_{pref_unique_key}"
         )
-        available_fsas = sorted(fsa_geom_map.keys())
-        zip_to_add = st.multiselect(
-            "Ajouter des ZIPs à la route",
-            available_fsas,
-            key=f"add_{pref_unique_key}"
-        )
+
+        fsa_geom_map = st.session_state.get("home_fsa_geom_map")
+        fsa_geom_ready = fsa_geom_map is not None
+        zip_to_add = []
+        if not fsa_geom_ready:
+            st.info("ℹ️ Chargez le référentiel FSA uniquement si vous devez ajouter ou recalculer des ZIPs (opération lourde).")
+            if st.button("📁 Charger le référentiel FSA", key=f"load_fsa_{pref_unique_key}"):
+                fsa_geom_map = ensure_fsa_geom_map()
+                fsa_geom_ready = True
+        if fsa_geom_ready:
+            available_fsas = sorted(fsa_geom_map.keys())
+            zip_to_add = st.multiselect(
+                "Ajouter des ZIPs à la route",
+                available_fsas,
+                key=f"add_{pref_unique_key}"
+            )
         new_adj = st.text_input("Routes adjacentes :", found["route_obj"].get("adjacentRoutes", ""))
 
         if st.button("💾 Appliquer les changements"):
@@ -335,6 +410,10 @@ if st_data and st_data.get("last_clicked"):
                             poly_entry["route_name"] = new_route_name
                     found["route_name"] = new_route_name
                     found["zone_name"] = new_zone_name
+
+                    requires_fsa = bool(zip_to_remove or zip_to_add)
+                    if requires_fsa and fsa_geom_map is None:
+                        fsa_geom_map = ensure_fsa_geom_map()
 
                     # --- Suppression ZIP (modifie la préférence actuelle uniquement) ---
                     curr_pref_zips_set = {z.strip().upper() for z in str(found["pref_obj"].get("zip", "")).split(",") if z.strip()}
