@@ -27,9 +27,9 @@ uploaded_json = st.file_uploader("📂 Charger le fichier JSON", type=["json"])
 if uploaded_json is not None:
     try:
         data = json.load(StringIO(uploaded_json.getvalue().decode("utf-8")))
-        st.success(f"✅ Fichier JSON chargé : {uploaded_json.name}")
+        st.success(f"Fichier JSON chargé : {uploaded_json.name}")
     except Exception as e:
-        st.error(f"❌ Erreur lors du chargement du JSON : {e}")
+        st.error(f"Erreur lors du chargement du JSON : {e}")
         st.stop()
 else:
     st.info("⬆️ Veuillez importer un fichier JSON pour continuer.")
@@ -42,9 +42,9 @@ try:
     gdf = gpd.read_file(shapefile_path)[["CFSAUID", "geometry"]]
     if gdf.crs.to_string().lower() != "epsg:4326":
         gdf = gdf.to_crs(epsg=4326)
-    st.success("✅ Fichiers chargés avec succès.")
+    st.success("Fichiers chargés avec succès.")
 except Exception as e:
-    st.error(f"❌ Erreur de chargement du shapefile : {e}")
+    st.error(f"Erreur de chargement du shapefile : {e}")
     st.stop()
 
 # --- Fonctions utilitaires ---
@@ -128,9 +128,9 @@ if "new_polygons" in st.session_state and st.session_state["new_polygons"]:
     new_polygons = st.session_state["new_polygons"]
     modified_data = st.session_state["modified_data"]
 
-    st.success(f"✅ {updated} zones restructurées avec succès.")
+    st.success(f" {updated} zones restructurées avec succès.")
     if errors:
-        st.warning(f"⚠️ {errors} zones ignorées (aucun FSA trouvé).")
+        st.warning(f" {errors} zones ignorées (aucun FSA trouvé).")
 
     # --- Nouvelle carte ---
     m_new = folium.Map(location=[45.5017, -73.5673], zoom_start=10)
@@ -145,7 +145,7 @@ if "new_polygons" in st.session_state and st.session_state["new_polygons"]:
             }
         ).add_to(m_new)
 
-    # ➕ Dépôt
+    # Dépôt
     if "depotLocation" in data:
         depot = data["depotLocation"]
         lat_key = "latitude" if "latitude" in depot else "lat"

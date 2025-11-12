@@ -9,7 +9,11 @@ import os
 
 # --- Configuration ---
 st.set_page_config(page_title="Modifier la plage de routes", layout="wide")
-st.title("🧭 Mise à jour cohérente des routes, adjacences et labels")
+st.title("Mise à jour cohérente des routes, adjacences et labels")
+
+if "bulk_modified_json" not in st.session_state:
+    st.session_state.bulk_modified_json = None
+    st.session_state.bulk_modified_filename = None
 
 # --- File uploader pour le JSON ---
 uploaded_file = st.file_uploader("📂 Charger le fichier JSON de configuration", type=["json"])
@@ -26,6 +30,12 @@ except Exception as e:
     st.error(f"❌ Erreur de lecture du JSON : {e}")
     st.stop()
 
+current_upload_key = f"{uploaded_file.name}:{len(uploaded_file.getvalue())}"
+if st.session_state.get("bulk_last_upload") != current_upload_key:
+    st.session_state.bulk_modified_json = None
+    st.session_state.bulk_modified_filename = None
+    st.session_state.bulk_last_upload = current_upload_key
+
 # --- Définir un chemin temporaire pour la sauvegarde ---
 json_path = Path(uploaded_file.name)
 
@@ -33,7 +43,7 @@ json_path = Path(uploaded_file.name)
 current_pattern = data.get("admissibleRoutePatterns", "")
 match = re.match(r"([A-Z]+)\|(\d+)\|(\d+)", current_pattern)
 if not match:
-    st.error("❌ Format invalide pour 'admissibleRoutePatterns'. Exemple attendu : MONT|1500|1999")
+    st.error(" Format invalide pour 'admissibleRoutePatterns'. Exemple attendu : MONT|1500|1999")
     st.stop()
 
 prefix, min_route, max_route = match.groups()
@@ -55,23 +65,23 @@ st.info(f"ℹ️ Espace entre les routes actuel (routeNumberGap) : {route_gap}")
 # --- Vérification dynamique ---
 valid_range = True
 if new_min >= new_max:
-    st.error("🚫 Le minimum doit être strictement inférieur au maximum.")
+    st.error(" Le minimum doit être strictement inférieur au maximum.")
     valid_range = False
 elif new_min < 0 or new_max < 0:
-    st.error("🚫 Les valeurs doivent être positives.")
+    st.error("Les valeurs doivent être positives.")
     valid_range = False
 else:
-    st.success(f"✅ Nouvelle plage valide : {prefix}{new_min} → {prefix}{new_max}")
+    st.success(f" Nouvelle plage valide : {prefix}{new_min} → {prefix}{new_max}")
 
 # --- Option de mise à jour complète ---
-st.markdown("### ⚙️ Options de mise à jour")
+st.markdown("###  Options de mise à jour")
 st.caption("Les `name`, `adjacentRoutes`, `representative`, et `labels` seront mis à jour en cohérence.")
-adjust = st.checkbox("🔁 Mettre à jour aussi les `adjacentRoutes`, `representative` et `labels`", value=True)
+adjust = st.checkbox(" Mettre à jour aussi les `adjacentRoutes`, `representative` et `labels`", value=True)
 
 # --- Application ---
 if st.button("💾 Appliquer les changements"):
     if not valid_range:
-        st.error("❌ Impossible d’appliquer les changements : plage invalide.")
+        st.error(" Impossible d’appliquer les changements : plage invalide.")
         st.stop()
 
     log_entries = []  # journalisation des changements
@@ -138,9 +148,9 @@ if st.button("💾 Appliquer les changements"):
         json.dump(data, buffer, indent=4, ensure_ascii=False)
         buffer.seek(0)
         json.loads(buffer.getvalue())
-        st.success("✅ Structure JSON valide avant sauvegarde.")
+        st.success("Structure JSON valide avant sauvegarde.")
     except json.JSONDecodeError as e:
-        st.error(f"❌ Structure JSON invalide : {e}")
+        st.error(f" Structure JSON invalide : {e}")
         st.stop()
 
     # Étape 7 — Vérification de cohérence post-sauvegarde
@@ -163,15 +173,15 @@ if st.button("💾 Appliquer les changements"):
                     broken_refs.add(label)
 
     if broken_refs:
-        st.warning(f"⚠️ Références non résolues après mise à jour : {', '.join(sorted(broken_refs))}")
+        st.warning(f" Références non résolues après mise à jour : {', '.join(sorted(broken_refs))}")
         log_entries.append(f"[WARN] Références non résolues : {', '.join(sorted(broken_refs))}")
     else:
-        st.success("✅ Vérification finale : toutes les références sont cohérentes.")
+        st.success(" Vérification finale : toutes les références sont cohérentes.")
         log_entries.append("[OK] Vérification finale : toutes les références cohérentes.")
 
     # Étape 8 — Résumé et téléchargement
     if updated_routes:
-        st.markdown("### 🔁 Routes renommées :")
+        st.markdown("###  Routes renommées :")
         for old, new in updated_routes:
             st.write(f"- {old} → {new}")
 
@@ -187,17 +197,15 @@ if st.button("💾 Appliquer les changements"):
 
     st.success(f"📁 Fichier de log enregistré dans : `{log_filename}`")
 
-    st.download_button(
-        label="📜 Télécharger le fichier de log",
-        data="\n".join(log_entries),
-        file_name=f"CHANGE_LOG_{timestamp}.txt",
-        mime="text/plain"
-    )
+    result_json = buffer.getvalue()
+    st.session_state.bulk_modified_json = result_json
+    st.session_state.bulk_modified_filename = f"UPDATED_{timestamp}_{uploaded_file.name}"
 
+if st.session_state.bulk_modified_json:
     st.markdown("---")
     st.download_button(
         label="⬇️ Télécharger le fichier JSON modifié",
-        data=buffer.getvalue(),
-        file_name=f"UPDATED_{timestamp}_{uploaded_file.name}",
+        data=st.session_state.bulk_modified_json,
+        file_name=st.session_state.bulk_modified_filename or "updated_configuration.json",
         mime="application/json",
     )

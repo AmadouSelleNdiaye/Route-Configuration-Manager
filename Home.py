@@ -1,11 +1,11 @@
-from io import StringIO
 import streamlit as st
 from streamlit_folium import st_folium
 import folium
 import json
 from shapely.geometry import Point, Polygon, MultiPolygon
-from pathlib import Path
+from shapely.ops import unary_union
 import geopandas as gpd
+from pathlib import Path
 import re
 import hashlib
 import uuid
@@ -15,7 +15,6 @@ st.set_page_config(page_title="Carte OpenStreetMap — Gestion dynamique", layou
 st.title("🗺️ Carte interactive — Édition dynamique des zones par codes postaux")
 
 # --- Chemins des fichiers ---
-json_path = Path("data/QC-MONT-STD-SORT2-CASCADE-ASN.json")
 shapefile_path = Path("data/lfsa000b21a_e.shp")
 
 # --- Uploader pour le JSON ---
@@ -25,23 +24,31 @@ if not uploaded_json:
     st.info("Veuillez charger un fichier JSON pour commencer.")
     st.stop()
 
-try:
-    data = json.load(StringIO(uploaded_json.getvalue().decode("utf-8")))
-    st.success(f"✅ Fichier JSON chargé avec succès : {uploaded_json.name}")
-except Exception as e:
-    st.error(f"❌ Erreur lors de la lecture du JSON : {e}")
+uploaded_bytes = uploaded_json.getvalue()
+file_signature = hashlib.sha1(uploaded_bytes).hexdigest()
+
+if (
+    st.session_state.get("home_uploaded_signature") != file_signature
+    or "home_json_data" not in st.session_state
+):
+    try:
+        parsed_data = json.loads(uploaded_bytes.decode("utf-8"))
+    except Exception as e:
+        st.error(f"❌ Erreur lors de la lecture du JSON : {e}")
+        st.stop()
+    st.session_state["home_uploaded_signature"] = file_signature
+    st.session_state["home_uploaded_name"] = uploaded_json.name
+    st.session_state["home_json_data"] = parsed_data
+    st.session_state["home_download_name"] = f"UPDATED_{uploaded_json.name}"
+    st.session_state["home_download_name_input"] = f"UPDATED_{uploaded_json.name}"
+    st.session_state["home_polygons_cache"] = None
+
+data = st.session_state.get("home_json_data")
+if data is None:
+    st.error("❌ Impossible de charger les données depuis la session.")
     st.stop()
 
-# --- Charger le shapefile ---
-try:
-    gdf = gpd.read_file(shapefile_path)[["CFSAUID", "geometry"]]
-    gdf["CFSAUID"] = gdf["CFSAUID"].astype(str).str.upper().str.strip()
-    if gdf.crs and gdf.crs.to_string().lower() != "epsg:4326":
-        gdf = gdf.to_crs(epsg=4326)
-    st.success("✅ Shapefile chargé et reprojeté en EPSG:4326.")
-except Exception as e:
-    st.error(f"❌ Erreur de chargement du shapefile : {e}")
-    st.stop()
+st.success(f"✅ Fichier JSON chargé avec succès : {uploaded_json.name}")
 
 # --- Vérification des routes admissibles ---
 admissible_patterns = data.get("admissibleRoutePatterns", "")
@@ -88,6 +95,41 @@ def normalize_geom(geom):
     if len(polys) == 1:
         return polys[0]
     return MultiPolygon(polys)
+
+@st.cache_data(show_spinner=False)
+def load_shapefile_data(path: str):
+    gdf_local = gpd.read_file(path)[["CFSAUID", "geometry"]]
+    gdf_local["CFSAUID"] = gdf_local["CFSAUID"].astype(str).str.upper().str.strip()
+    if gdf_local.crs and gdf_local.crs.to_string().lower() != "epsg:4326":
+        gdf_local = gdf_local.to_crs(epsg=4326)
+    fsa_geoms = {}
+    for fsa, sub in gdf_local.groupby("CFSAUID"):
+        merged = sub.geometry.unary_union
+        merged_norm = normalize_geom(merged)
+        if merged_norm:
+            fsa_geoms[fsa] = merged_norm
+    return gdf_local, fsa_geoms
+
+def merge_fsas_to_geom(fsas, fsa_geom_map):
+    geoms = [fsa_geom_map.get(f.upper().strip()) for f in fsas if f and f.upper().strip() in fsa_geom_map]
+    geoms = [g for g in geoms if g is not None]
+    if not geoms:
+        return None
+    if len(geoms) == 1:
+        return normalize_geom(geoms[0])
+    merged = unary_union(geoms)
+    return normalize_geom(merged)
+
+def geom_to_latlon_parts(geom):
+    parts = []
+    if geom is None:
+        return parts
+    if isinstance(geom, Polygon):
+        parts.append([(lat, lon) for lon, lat in geom.exterior.coords])
+    elif isinstance(geom, MultiPolygon):
+        for g in geom.geoms:
+            parts.append([(lat, lon) for lon, lat in g.exterior.coords])
+    return parts
 
 def parse_polygon_text(coords_text):
     """Parse polygonCoordinates -> parts_latlon, shapely"""
@@ -141,7 +183,23 @@ def build_polygons_from_data(data):
                 })
     return polygons
 
-polygons = build_polygons_from_data(data)
+def get_polygons_cache():
+    cached_polygons = st.session_state.get("home_polygons_cache")
+    if cached_polygons is None:
+        cached_polygons = build_polygons_from_data(data)
+        st.session_state["home_polygons_cache"] = cached_polygons
+    return cached_polygons
+
+# --- Charger le shapefile ---
+try:
+    _, fsa_geom_map = load_shapefile_data(str(shapefile_path))
+    st.success("✅ Shapefile chargé et reprojeté en EPSG:4326.")
+except Exception as e:
+    st.error(f"❌ Erreur de chargement du shapefile : {e}")
+    st.stop()
+
+polygons = get_polygons_cache()
+map_container = st.container()
 
 # --- Coordonnées du dépôt ---
 def get_depot_coordinates(data):
@@ -198,8 +256,13 @@ def show_map(polygons, highlight=None):
     return m
 
 # --- Carte initiale ---
-m = show_map(polygons)
-st_data = st_folium(m, width=950, height=600)
+highlight_route = st.session_state.get("home_highlight_route")
+with map_container:
+    m = show_map(polygons, highlight=highlight_route)
+    st_data = st_folium(m, width=950, height=600)
+
+if highlight_route:
+    st.session_state["home_highlight_route"] = None
 
 # --- Gestion du clic ---
 if st_data and st_data.get("last_clicked"):
@@ -230,12 +293,24 @@ if st_data and st_data.get("last_clicked"):
         zips_in_route = set()
         for p in route_prefs:
             zips_in_route.update([z.strip().upper() for z in str(p.get("zip", "")).split(",") if z.strip()])
+        curr_pref_zips = {z.strip().upper() for z in str(found["pref_obj"].get("zip", "")).split(",") if z.strip()}
+
         st.text("Codes postaux existants pour cette route :")
         st.write(", ".join(sorted(zips_in_route)) if zips_in_route else "Aucun")
 
         st.markdown("#### 🧩 Gestion des codes postaux")
-        zip_to_add = st.text_input("Ajouter ZIP (ex: H9S,H9T)", "")
-        zip_to_remove = st.text_input("Supprimer ZIP (ex: H9X,H9W)", "")
+        pref_unique_key = f"{found['route_obj'].get('id', 'route')}_{found['pref_obj'].get('id', 'pref')}"
+        zip_to_remove = st.multiselect(
+            "Supprimer des ZIPs de cette zone",
+            sorted(curr_pref_zips),
+            key=f"remove_{pref_unique_key}"
+        )
+        available_fsas = sorted(fsa_geom_map.keys())
+        zip_to_add = st.multiselect(
+            "Ajouter des ZIPs à la route",
+            available_fsas,
+            key=f"add_{pref_unique_key}"
+        )
         new_adj = st.text_input("Routes adjacentes :", found["route_obj"].get("adjacentRoutes", ""))
 
         if st.button("💾 Appliquer les changements"):
@@ -253,42 +328,92 @@ if st_data and st_data.get("last_clicked"):
                     found["route_obj"]["name"] = new_route_name
                     found["pref_obj"]["routingParameterUiPolygonDTO"]["name"] = new_zone_name
                     found["route_obj"]["adjacentRoutes"] = new_adj
+                    found["pref_obj"]["zip"] = found["pref_obj"].get("zip", "")
+
+                    for poly_entry in polygons:
+                        if poly_entry["route_obj"] is found["route_obj"]:
+                            poly_entry["route_name"] = new_route_name
+                    found["route_name"] = new_route_name
+                    found["zone_name"] = new_zone_name
 
                     # --- Suppression ZIP (modifie la préférence actuelle uniquement) ---
+                    curr_pref_zips_set = {z.strip().upper() for z in str(found["pref_obj"].get("zip", "")).split(",") if z.strip()}
+                    pref_removed = False
                     removed_zips = set()
                     if zip_to_remove:
-                        to_remove = {z.strip().upper() for z in zip_to_remove.split(",") if z.strip()}
-                        curr_pref_zips = {z.strip().upper() for z in str(found["pref_obj"].get("zip", "")).split(",") if z.strip()}
-                        remaining = curr_pref_zips - to_remove
-                        removed_zips = curr_pref_zips & to_remove
+                        to_remove = {z.strip().upper() for z in zip_to_remove if z}
+                        remaining = curr_pref_zips_set - to_remove
+                        removed_zips = curr_pref_zips_set & to_remove
                         if remaining:
                             found["pref_obj"]["zip"] = ",".join(sorted(remaining))
-                            zip_geoms = gdf[gdf["CFSAUID"].isin(list(remaining))]
-                            if not zip_geoms.empty:
-                                merged = zip_geoms.unary_union
-                                merged_norm = normalize_geom(merged)
-                                if merged_norm:
-                                    found["pref_obj"]["routingParameterUiPolygonDTO"]["polygonCoordinates"] = polygon_to_text(merged_norm)
+                            found["zip"] = found["pref_obj"]["zip"]
+                            missing_geom_remove = [z for z in remaining if z not in fsa_geom_map]
+                            if missing_geom_remove:
+                                st.warning(f"⚠️ Impossible de recalculer complètement le polygone, géométries manquantes pour : {', '.join(sorted(missing_geom_remove))}")
+                            else:
+                                merged_geom = merge_fsas_to_geom(sorted(remaining), fsa_geom_map)
+                                if merged_geom:
+                                    found["pref_obj"]["routingParameterUiPolygonDTO"]["polygonCoordinates"] = polygon_to_text(merged_geom)
+                                    found["shapely"] = merged_geom
+                                    found["parts"] = geom_to_latlon_parts(merged_geom)
+                            curr_pref_zips_set = remaining
                         else:
                             prefs_list = found["route_obj"].get("routingParameterUiVehiclePreferenceDTOs", [])
                             if found["pref_obj"] in prefs_list:
-                                prefs_list.remove(found["pref_obj"])
+                                removed_pref_obj = found["pref_obj"]
+                                prefs_list.remove(removed_pref_obj)
+                                polygons[:] = [p for p in polygons if p["pref_obj"] is not removed_pref_obj]
+                                pref_removed = True
+                            curr_pref_zips_set = set()
 
-                    # --- Ajout ZIP (crée une nouvelle préférence avec nom unique) ---
+                    # Recalculer les zips présents dans la route après suppression
+                    route_prefs = found["route_obj"].get("routingParameterUiVehiclePreferenceDTOs", [])
+                    zips_in_route = set()
+                    for pref in route_prefs:
+                        zips_in_route.update([z.strip().upper() for z in str(pref.get("zip", "")).split(",") if z.strip()])
+
+                    # --- Ajout ZIP ---
                     added_zips = set()
                     if zip_to_add:
-                        to_add = [z.strip().upper() for z in zip_to_add.split(",") if z.strip()]
+                        to_add = [z.strip().upper() for z in zip_to_add if z]
                         to_create = [z for z in to_add if z not in zips_in_route]
                         duplicates = [z for z in to_add if z in zips_in_route]
                         if duplicates:
-                            st.warning(f"⚠️ ZIPs déjà présents : {', '.join(duplicates)}")
+                            st.warning(f"⚠️ ZIPs déjà présents : {', '.join(sorted(set(duplicates)))}")
                         if to_create:
-                            zip_geoms = gdf[gdf["CFSAUID"].isin(to_create)]
-                            if not zip_geoms.empty:
-                                merged = zip_geoms.unary_union
-                                merged_norm = normalize_geom(merged)
-                                if merged_norm:
-                                    poly_text = polygon_to_text(merged_norm)
+                            missing_geom_add = [z for z in to_create if z not in fsa_geom_map]
+                            usable_zips = [z for z in to_create if z in fsa_geom_map]
+                            if missing_geom_add:
+                                st.warning(f"⚠️ Géométries introuvables pour : {', '.join(sorted(missing_geom_add))}")
+                            if usable_zips:
+                                new_geom = merge_fsas_to_geom(usable_zips, fsa_geom_map)
+                                merged_into_current = False
+                                if not pref_removed:
+                                    existing_zips_list = sorted(curr_pref_zips_set)
+                                    existing_geom = merge_fsas_to_geom(existing_zips_list, fsa_geom_map) if existing_zips_list else None
+                                else:
+                                    existing_zips_list = []
+                                    existing_geom = None
+
+                                if existing_geom and new_geom:
+                                    existing_buffer = existing_geom.buffer(0)
+                                    new_buffer = new_geom.buffer(0)
+                                    if existing_buffer.intersects(new_buffer) or existing_buffer.distance(new_buffer) < 1e-6:
+                                        combined_geom = normalize_geom(unary_union([existing_geom, new_geom]))
+                                        combined_zips = sorted(set(existing_zips_list) | set(usable_zips))
+                                        found["pref_obj"]["zip"] = ",".join(combined_zips)
+                                        found["zip"] = found["pref_obj"]["zip"]
+                                        found["pref_obj"]["routingParameterUiPolygonDTO"]["polygonCoordinates"] = polygon_to_text(combined_geom)
+                                        found["shapely"] = combined_geom
+                                        found["parts"] = geom_to_latlon_parts(combined_geom)
+                                        curr_pref_zips_set = set(combined_zips)
+                                        added_zips.update(usable_zips)
+                                        zips_in_route.update(usable_zips)
+                                        merged_into_current = True
+                                        st.info(f"✅ ZIPs fusionnés dans la zone '{found['pref_obj']['routingParameterUiPolygonDTO']['name']}'.")
+
+                                if not merged_into_current and new_geom:
+                                    poly_text = polygon_to_text(new_geom)
 
                                     # 🔹 Génération d'un nom unique de zone
                                     base_zone_name = found["zone_name"].strip()
@@ -306,7 +431,7 @@ if st_data and st_data.get("last_clicked"):
                                     new_pref = {
                                         "id": str(uuid.uuid4().int)[:12],
                                         "routingParameterVehicleId": str(found["route_obj"].get("id", "")),
-                                        "zip": ",".join(sorted(to_create)),
+                                        "zip": ",".join(sorted(usable_zips)),
                                         "tag": "",
                                         "inPolygon": True,
                                         "routingParameterUiPolygonDTO": {
@@ -319,21 +444,35 @@ if st_data and st_data.get("last_clicked"):
                                         "orderRank": 1
                                     }
                                     found["route_obj"].setdefault("routingParameterUiVehiclePreferenceDTOs", []).append(new_pref)
-                                    added_zips.update(to_create)
-                                    st.info(f"✅ Nouvelle préférence '{new_zone_name_unique}' créée pour {len(to_create)} ZIP(s).")
+                                    added_zips.update(usable_zips)
+                                    zips_in_route.update(usable_zips)
+                                    polygons.append({
+                                        "route_obj": found["route_obj"],
+                                        "pref_obj": new_pref,
+                                        "route_name": new_route_name,
+                                        "zone_name": new_zone_name_unique,
+                                        "zip": new_pref["zip"],
+                                        "parts": geom_to_latlon_parts(new_geom),
+                                        "shapely": new_geom
+                                    })
+                                    st.info(f"✅ Nouvelle préférence '{new_zone_name_unique}' créée pour {len(usable_zips)} ZIP(s).")
+                                elif not new_geom:
+                                    st.warning("⚠️ Impossible de calculer le polygone des ZIPs sélectionnés.")
                             else:
-                                st.warning("⚠️ Aucun polygone trouvé pour ces ZIPs dans le shapefile.")
+                                st.warning("⚠️ Aucun polygone exploitable pour les ZIPs sélectionnés.")
 
                     # --- Sauvegarde ---
-                    with open(json_path, "w", encoding="utf-8") as f:
-                        json.dump(data, f, indent=4, ensure_ascii=False)
-                    st.success("✅ Modifications sauvegardées.")
+                    st.session_state["home_json_data"] = data
+                    st.session_state["home_polygons_cache"] = polygons
+                    st.success("✅ Modifications sauvegardées en mémoire.")
 
-                    # --- Rechargement ---
-                    polygons = build_polygons_from_data(data)
-                    st.subheader("🗺️ Carte mise à jour")
-                    m2 = show_map(polygons, highlight=new_route_name)
-                    st_folium(m2, width=950, height=600)
+                    st.session_state["home_highlight_route"] = new_route_name
+
+                    # --- Mise à jour de la carte sans recalcul global ---
+                    map_container.empty()
+                    with map_container:
+                        m_updated = show_map(polygons, highlight=new_route_name)
+                        st_folium(m_updated, width=950, height=600)
 
                     if added_zips or removed_zips:
                         msg = []
@@ -346,3 +485,28 @@ if st_data and st_data.get("last_clicked"):
         st.warning("⚠️ Aucun polygone trouvé pour ce point.")
 else:
     st.info("🖱️ Cliquez sur un polygone pour afficher et modifier ses informations.")
+
+# --- Téléchargement de la configuration mise à jour ---
+if "home_json_data" in st.session_state and st.session_state["home_json_data"]:
+    default_download_name = st.session_state.get("home_download_name") or f"UPDATED_{uploaded_json.name}"
+    download_name_input = st.text_input(
+        "Nom du fichier exporté",
+        value=default_download_name,
+        key="home_download_name_input"
+    ).strip()
+    download_name = download_name_input or default_download_name
+    if not download_name.endswith(".json"):
+        download_name = f"{download_name}.json"
+    st.session_state["home_download_name"] = download_name
+
+    download_payload = json.dumps(
+        st.session_state["home_json_data"],
+        indent=4,
+        ensure_ascii=False
+    )
+    st.download_button(
+        label="⬇️ Télécharger la configuration mise à jour",
+        data=download_payload,
+        file_name=download_name,
+        mime="application/json"
+    )

@@ -8,7 +8,7 @@ import json, datetime, random, os
 # CONFIGURATION
 # =========================================================
 st.set_page_config(page_title="Créateur JSON Routage Intelcom", layout="wide")
-st.title("🚚 Générateur complet de structure JSON de routage Intelcom")
+st.title("Générateur de Configuration de Route")
 
 # --- Path shapefile automatique ---
 SHAPEFILE_PATH = "data/lfsa000b21a_e.shp"
@@ -86,22 +86,22 @@ def simplify_polygon_to_limit(geom, max_chars=MAX_POLYGON_CHARS):
 # =========================================================
 # CHARGEMENT DU SHAPEFILE
 # =========================================================
-st.header("1️⃣ Chargement automatique du shapefile")
+st.header("Chargement du shapefile")
 
 if not os.path.exists(SHAPEFILE_PATH):
-    st.error(f"❌ Le fichier shapefile n'existe pas à {SHAPEFILE_PATH}")
+    st.error(f"Le fichier shapefile n'existe pas à {SHAPEFILE_PATH}")
     st.stop()
 
 gdf = gpd.read_file(SHAPEFILE_PATH)
 gdf = ensure_wgs84(gdf)
 fsa_col = find_fsa_column(gdf)
 all_fsas = sorted(gdf[fsa_col].astype(str).unique().tolist())
-st.success(f"✅ Shapefile chargé ({len(all_fsas)} FSAs détectés via {fsa_col})")
+st.success(f" Shapefile chargé ({len(all_fsas)} FSAs détectés via {fsa_col})")
 
 # =========================================================
 # PARAMÈTRES DU RÉSEAU (tous les éléments)
 # =========================================================
-st.header("2️⃣ Paramètres généraux du réseau")
+st.header("Paramètres généraux du réseau")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -121,7 +121,7 @@ with col2:
 
 depot_point = Point(depot_lng, depot_lat)
 
-# --- 🧩 Extraction dynamique du préfixe et bornes à partir d'admissibleRoutePatterns ---
+# ---  Extraction dynamique du préfixe et bornes à partir d'admissibleRoutePatterns ---
 try:
     parts = admissible_patterns.split("|")
     prefix, start_num, end_num = parts[0], int(parts[1]), int(parts[2])
@@ -131,7 +131,7 @@ except Exception:
 # =========================================================
 # CRÉATION DES ROUTES
 # =========================================================
-st.header("3️⃣ Création des routes à partir des FSAs")
+st.header("Création des routes à partir des FSAs")
 
 if "routes" not in st.session_state:
     st.session_state.routes = []
@@ -139,11 +139,25 @@ if "used_nums" not in st.session_state:
     st.session_state.used_nums = []
 
 selected_fsas = st.multiselect("Sélectionner les FSAs à inclure dans la nouvelle route :", all_fsas)
-zone_name = st.text_input("Nom de la zone (nom du polygone associé)")  # 🆕 Ajout du nom de la zone
+zone_name = st.text_input("Nom de la zone (nom du polygone associé)")  # Ajout du nom de la zone
 hard_target = st.checkbox("hardTarget", value=True)
 electric = st.checkbox("electric (véhicule électrique)", value=False)
 
 add_route = st.button("➕ Ajouter la route à partir des FSAs sélectionnées")
+
+# =========================================================
+# APERÇU DES ROUTES
+# =========================================================
+if st.session_state.routes:
+    st.header(" Routes enregistrées")
+    for r in st.session_state.routes:
+        pref = r["routingParameterUiVehiclePreferenceDTOs"][0]
+        st.markdown(
+            f"- **{r['name']}** | Zone: `{pref['routingParameterUiPolygonDTO']['name']}` | "
+            f"Adjacent: `{r['adjacentRoutes'] or '—'}` | "
+            f"Représentative: `{r['representative'] or '—'}` | "
+            f"Zips: `{pref['zip']}` | Electric: `{r['electric']}` | HardTarget: `{r['hardTarget']}`"
+        )
 
 if add_route:
     if not selected_fsas:
@@ -186,7 +200,7 @@ if add_route:
                     "inPolygon": True,
                     "routingParameterUiPolygonDTO": {
                         "id": str(poly_id),
-                        "name": zone_name or route_name,  # 🆕 Nom de la zone ajouté
+                        "name": zone_name or route_name,  # Nom de la zone ajouté
                         "polygonCoordinates": polygon_coords,
                         "routingParameterId": network_id
                     },
@@ -229,7 +243,7 @@ def compute_relations(routes, depot_point):
 # =========================================================
 # GÉNÉRATION ET TÉLÉCHARGEMENT DU JSON COMPLET
 # =========================================================
-st.header("4️⃣ Génération du JSON final complet")
+st.header(" Génération du JSON final complet")
 
 if st.button("🧱 Générer la structure JSON complète"):
     if not st.session_state.routes:
@@ -283,8 +297,8 @@ if st.button("🧱 Générer la structure JSON complète"):
             "nbVehicle": len(st.session_state.routes)
         }
 
-        st.subheader("🧾 Structure JSON complète")
-        st.json(json_data)
+        # st.subheader("Structure JSON complète")
+        # st.json(json_data)
 
         st.download_button(
             label="📥 Télécharger le JSON complet",
@@ -293,16 +307,4 @@ if st.button("🧱 Générer la structure JSON complète"):
             mime="application/json"
         )
 
-# =========================================================
-# APERÇU DES ROUTES
-# =========================================================
-if st.session_state.routes:
-    st.header("5️⃣ Routes enregistrées")
-    for r in st.session_state.routes:
-        pref = r["routingParameterUiVehiclePreferenceDTOs"][0]
-        st.markdown(
-            f"- **{r['name']}** | Zone: `{pref['routingParameterUiPolygonDTO']['name']}` | "
-            f"Adjacent: `{r['adjacentRoutes'] or '—'}` | "
-            f"Représentative: `{r['representative'] or '—'}` | "
-            f"Zips: `{pref['zip']}` | Electric: `{r['electric']}` | HardTarget: `{r['hardTarget']}`"
-        )
+
