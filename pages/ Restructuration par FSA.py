@@ -12,6 +12,9 @@ from io import StringIO
 
 # --- Configuration de la page ---
 st.set_page_config(page_title="♻️ Restructuration FSA", layout="wide")
+logo_icon = "data/logo_intelcom_2024.png"
+logo_image = "data/logo_intelcom_2024.png"
+st.logo(icon_image=logo_icon, image=logo_image)
 st.title("♻️ Recalcul et export des zones postales (FSA)")
 
 st.write("""

@@ -9,6 +9,9 @@ import os
 
 # --- Configuration ---
 st.set_page_config(page_title="Modifier la plage de routes", layout="wide")
+logo_icon = "data/logo_intelcom_2024.png"
+logo_image = "data/logo_intelcom_2024.png"
+st.logo(icon_image=logo_icon, image=logo_image)
 st.title("Mise à jour cohérente des routes, adjacences et labels")
 
 if "bulk_modified_json" not in st.session_state:
@@ -55,6 +58,7 @@ st.markdown("### ✏️ Nouvelle plage de routes")
 col1, col2 = st.columns(2)
 with col1:
     new_min = st.number_input("Nouveau minimum", min_value=0, value=min_route, step=1)
+    interval = st.number_input("Interval", min_value=0, value=200, step=1)
 with col2:
     new_max = st.number_input("Nouveau maximum", min_value=0, value=max_route, step=1)
 
@@ -92,7 +96,7 @@ if st.button("💾 Appliquer les changements"):
 
     # Étape 2 — Calcul correspondance old_name → new_name avec gap constant
     name_mapping = {}
-    current_num = new_min+200
+    current_num = new_min + interval
 
     for route in data.get("routingParameterUiVehicleDTOs", []):
         old_name = route.get("name", "")

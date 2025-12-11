@@ -8,6 +8,9 @@ import json, datetime, random, os
 # CONFIGURATION
 # =========================================================
 st.set_page_config(page_title="Créateur JSON Routage Intelcom", layout="wide")
+logo_icon = "data/logo_intelcom_2024.png"
+logo_image = "data/logo_intelcom_2024.png"
+st.logo(icon_image=logo_icon, image=logo_image)
 st.title("Générateur de Configuration de Route")
 
 # --- Path shapefile automatique ---

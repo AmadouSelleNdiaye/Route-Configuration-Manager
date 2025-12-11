@@ -14,6 +14,9 @@ import uuid
 
 # --- Configuration ---
 st.set_page_config(page_title="Carte OpenStreetMap — Gestion dynamique", layout="wide")
+logo_icon = "data/logo_intelcom_2024.png"
+logo_image = "data/logo_intelcom_2024.png"
+st.logo(icon_image=logo_icon, image=logo_image)
 st.title("🗺️ Carte interactive — Édition dynamique des zones par codes postaux")
 
 # --- Chemins des fichiers ---
